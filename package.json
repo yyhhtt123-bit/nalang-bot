@@ -1,0 +1,23 @@
+{
+  "name": "nalang-telegram-bot",
+  "version": "2.0.0",
+  "description": "Personal Telegram bot powered by NalangAI",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "better-sqlite3": "^9.6.0",
+    "dotenv": "^16.5.0",
+    "node-fetch": "^2.7.0",
+    "node-telegram-bot-api": "^0.64.0",
+    "openai": "^5.5.0",
+    "sharp": "^0.34.2",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}

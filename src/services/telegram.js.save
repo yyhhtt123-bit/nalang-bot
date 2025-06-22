@@ -1,0 +1,1333 @@
+const TelegramBot = require('node-telegram-bot-api');
+const logger = require('../utils/logger');
+const database = require('../utils/database');
+const nalangClient = require('./nalang');
+const memoryExtractor = require('./memoryExtractor');
+const characterCardParser = require('./characterCardParser');
+const config = require('../config');
+const { MODE_CONFIG } = require('../prompts');
+const path = require('path');
+const fetch = require('node-fetch');
+
+class TelegramBotService {
+    constructor() {
+        this.bot = new TelegramBot(config.telegram.token, { 
+            polling: {
+                interval: 300,
+                autoStart: true,
+                params: {
+                    timeout: 10
+                }
+            }
+        });
+        
+        // 用户状态管理
+        this.userStates = new Map();
+        
+        // 临时存储召唤的角色
+        this.tempCharacterData = new Map();
+        
+        // 当前正在使用的角色
+        this.activeCharacters = new Map();
+        
+        // 情绪系统配置
+        this.emotionConfig = {
+            emotions: {
+                'neutral': { symbol: '[-]', name: '平静' },
+                'happy': { symbol: '[*]', name: '开心' },
+                'sad': { symbol: '[.]', name: '悲伤' },
+                'angry': { symbol: '[!]', name: '愤怒' },
+                'excited': { symbol: '[!!]', name: '兴奋' },
+                'anxious': { symbol: '[?]', name: '焦虑' },
+                'romantic': { symbol: '[<3]', name: '浪漫' },
+                'playful': { symbol: '[~]', name: '调皮' },
+                'shy': { symbol: '[//]', name: '害羞' }
+            },
+            triggers: {
+                '开心': { emotion: 'happy', intensity: 0.8 },
+                '高兴': { emotion: 'happy', intensity: 0.7 },
+                '快乐': { emotion: 'happy', intensity: 0.8 },
+                '喜欢': { emotion: 'happy', intensity: 0.6 },
+                '爱': { emotion: 'romantic', intensity: 0.9 },
+                '伤心': { emotion: 'sad', intensity: 0.8 },
+                '难过': { emotion: 'sad', intensity: 0.7 },
+                '哭': { emotion: 'sad', intensity: 0.9 },
+                '生气': { emotion: 'angry', intensity: 0.8 },
+                '愤怒': { emotion: 'angry', intensity: 0.9 },
+                '讨厌': { emotion: 'angry', intensity: 0.6 },
+                '兴奋': { emotion: 'excited', intensity: 0.8 },
+                '激动': { emotion: 'excited', intensity: 0.8 },
+                '紧张': { emotion: 'anxious', intensity: 0.7 },
+                '害怕': { emotion: 'anxious', intensity: 0.8 },
+                '害羞': { emotion: 'shy', intensity: 0.7 },
+                '羞': { emotion: 'shy', intensity: 0.8 },
+                '调戏': { emotion: 'playful', intensity: 0.7 },
+                '玩': { emotion: 'playful', intensity: 0.6 }
+            }
+        };
+        
+        // 随机事件系统配置
+        this.randomEventConfig = {
+            // 基础触发概率
+            baseProbability: 0.15, // 15%的基础概率
+            
+            // 对话次数计数器（用于追踪何时触发事件）
+            conversationCounts: new Map(),
+            
+            // 最小对话间隔（避免事件太频繁）
+            minConversationGap: 3,
+            
+            // 事件类型
+            eventTypes: {
+                // 环境事件
+                environmental: [
+                    { text: "突然，一阵风吹过，带来了远处的神秘香味。", mood: "mysterious" },
+                    { text: "天空中划过一道流星，似乎预示着什么。", mood: "romantic" },
+                    { text: "远处传来了奇怪的声音，像是某种生物的叫声。", mood: "tense" },
+                    { text: "地面微微震动了一下，但很快就恢复了平静。", mood: "anxious" },
+                    { text: "一只蝴蝶飞过，在你们周围翩翩起舞。", mood: "peaceful" }
+                ],
+                
+                // 物品发现
+                discovery: [
+                    { text: "你注意到地上有什么东西在闪闪发光。", mood: "curious" },
+                    { text: "墙上出现了一些之前没有注意到的奇怪符号。", mood: "mysterious" },
+                    { text: "一本破旧的日记从某处掉了出来。", mood: "nostalgic" },
+                    { text: "你发现了一个隐藏的小盒子。", mood: "excited" },
+                    { text: "角落里有一封没有署名的信件。", mood: "intriguing" }
+                ],
+                
+                // 角色互动
+                interaction: [
+                    { text: "有人在门外敲门。", mood: "alert" },
+                    { text: "你听到有人在远处呼唤着什么。", mood: "curious" },
+                    { text: "一个陌生的身影从暗处走了出来。", mood: "tense" },
+                    { text: "你感觉到有人在注视着你们。", mood: "uneasy" },
+                    { text: "一只小动物突然跑了进来。", mood: "playful" }
+                ],
+                
+                // 感官体验
+                sensory: [
+                    { text: "空气中弥漫着一种甜美的香气。", mood: "pleasant" },
+                    { text: "温度突然下降了几度，让人不禁打了个寒颤。", mood: "cold" },
+                    { text: "一道温暖的光线照在你的脸上。", mood: "warm" },
+                    { text: "你听到了悦耳的音乐声从某处传来。", mood: "peaceful" },
+                    { text: "一阵凉爽的微风吹过，带来了清新的感觉。", mood: "refreshing" }
+                ],
+                
+                // 剧情转折
+                plot_twist: [
+                    { text: "突然，所有的灯都熄灭了。", mood: "dramatic" },
+                    { text: "你意识到今天是一个特殊的日子。", mood: "significant" },
+                    { text: "时间似乎在这一刻停止了。", mood: "surreal" },
+                    { text: "你突然想起了一些重要的事情。", mood: "revelation" },
+                    { text: "一切都不是表面看起来的那样。", mood: "mysterious" }
+                ]
+            },
+            
+            // 情绪影响的事件调整
+            emotionModifiers: {
+                'happy': { probability: 0.05, preferredTypes: ['discovery', 'sensory'] },
+                'sad': { probability: -0.05, preferredTypes: ['environmental', 'sensory'] },
+                'angry': { probability: 0.1, preferredTypes: ['interaction', 'plot_twist'] },
+                'excited': { probability: 0.1, preferredTypes: ['discovery', 'plot_twist'] },
+                'anxious': { probability: 0.05, preferredTypes: ['environmental', 'interaction'] },
+                'romantic': { probability: 0.05, preferredTypes: ['sensory', 'environmental'] },
+                'playful': { probability: 0.1, preferredTypes: ['interaction', 'discovery'] },
+                'shy': { probability: -0.05, preferredTypes: ['sensory', 'environmental'] },
+                'neutral': { probability: 0, preferredTypes: [] }
+            }
+        };
+        
+        // 设置命令
+        this.setupCommands();
+        
+        // 设置事件监听器
+        this.setupEventListeners();
+        
+        logger.info('Telegram bot service initialized');
+    }
+    
+    // Markdown转义函数 - 关键修复
+    escapeMarkdown(text) {
+        if (!text) return '';
+        return text
+            .replace(/\\/g, '\\\\')
+            .replace(/\*/g, '\\*')
+            .replace(/_/g, '\\_')
+            .replace(/\[/g, '\\[')
+            .replace(/\]/g, '\\]')
+            .replace(/\(/g, '\\(')
+            .replace(/\)/g, '\\)')
+            .replace(/~/g, '\\~')
+            .replace(/`/g, '\\`')
+            .replace(/>/g, '\\>')
+            .replace(/#/g, '\\#')
+            .replace(/\+/g, '\\+')
+            .replace(/-/g, '\\-')
+            .replace(/=/g, '\\=')
+            .replace(/\|/g, '\\|')
+            .replace(/\{/g, '\\{')
+            .replace(/\}/g, '\\}')
+            .replace(/\./g, '\\.')
+            .replace(/!/g, '\\!');
+    }
+    
+    setupCommands() {
+        const commands = [
+            { command: 'start', description: '开始使用机器人' },
+            { command: 'menu', description: '打开主菜单' },
+            { command: 'reset', description: '重置当前对话' },
+            { command: 'summon', description: '召唤角色 (用法: /summon 角色描述)' },
+            { command: 'stats', description: '查看使用统计' },
+            { command: 'memories', description: '查看AI的记忆' },
+            { command: 'forget', description: '清除特定记忆' },
+            { command: 'memory', description: '补充记忆 (用法: /memory 内容)' },
+            { command: 'emotion', description: '查看当前情绪状态' },
+            { command: 'event', description: '手动触发随机事件' },
+            { command: 'help', description: '获取帮助信息' }
+        ];
+        
+        this.bot.setMyCommands(commands).catch(err => {
+            logger.error('Failed to set bot commands', { error: err.message });
+        });
+    }
+    
+    setupEventListeners() {
+        // 消息处理
+        this.bot.on('message', this.handleMessage.bind(this));
+        
+        // 文档处理（用于角色卡导入）
+        this.bot.on('document', this.handleDocument.bind(this));
+        
+        // 回调查询处理
+        this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
+        
+        // 错误处理
+        this.bot.on('polling_error', (error) => {
+            logger.error('Telegram polling error', { error: error.message });
+        });
+        
+        // 定期清理
+        setInterval(() => {
+            database.cleanup(30);
+        }, 24 * 60 * 60 * 1000); // 每天清理一次
+    }
+    
+    // 新增：检查并触发随机事件
+    async checkAndTriggerRandomEvent(chatId, mode) {
+        // 只在角色扮演模式下触发
+        if (mode !== 'roleplay') return null;
+        
+        // 获取或初始化对话计数
+        const counts = this.randomEventConfig.conversationCounts;
+        const currentCount = counts.get(chatId) || 0;
+        counts.set(chatId, currentCount + 1);
+        
+        // 检查是否满足最小间隔
+        if (currentCount < this.randomEventConfig.minConversationGap) {
+            return null;
+        }
+        
+        // 获取当前情绪状态
+        const emotion = database.getUserEmotion(chatId, mode);
+        const emotionModifier = this.randomEventConfig.emotionModifiers[emotion.emotion] || { probability: 0 };
+        
+        // 计算触发概率
+        const finalProbability = this.randomEventConfig.baseProbability + emotionModifier.probability;
+        
+        // 随机决定是否触发
+        if (Math.random() > finalProbability) {
+            return null;
+        }
+        
+        // 重置计数器
+        counts.set(chatId, 0);
+        
+        // 选择事件类型
+        let eventType;
+        if (emotionModifier.preferredTypes.length > 0 && Math.random() < 0.7) {
+            // 70%概率选择情绪偏好的事件类型
+            eventType = emotionModifier.preferredTypes[Math.floor(Math.random() * emotionModifier.preferredTypes.length)];
+        } else {
+            // 否则随机选择
+            const types = Object.keys(this.randomEventConfig.eventTypes);
+            eventType = types[Math.floor(Math.random() * types.length)];
+        }
+        
+        // 从选定类型中随机选择一个事件
+        const events = this.randomEventConfig.eventTypes[eventType];
+        const event = events[Math.floor(Math.random() * events.length)];
+        
+        logger.info('Random event triggered', { 
+            chatId, 
+            eventType, 
+            mood: event.mood,
+            emotion: emotion.emotion 
+        });
+        
+        return {
+            type: eventType,
+            event: event,
+            emotion: emotion.emotion
+        };
+    }
+    
+    // 新增：处理手动触发事件命令
+    async handleEvent(chatId) {
+        const state = this.userStates.get(chatId);
+        if (!state?.mode) {
+            await this.bot.sendMessage(chatId, '[!] 请先选择一个模式。');
+            return;
+        }
+        
+        if (state.mode !== 'roleplay') {
+            await this.bot.sendMessage(chatId, '[!] 随机事件只能在角色扮演模式下触发。');
+            return;
+        }
+        
+        // 强制触发一个随机事件
+        const oldCount = this.randomEventConfig.conversationCounts.get(chatId);
+        this.randomEventConfig.conversationCounts.set(chatId, 999); // 临时设置高计数以绕过间隔检查
+        
+        const eventData = await this.checkAndTriggerRandomEvent(chatId, state.mode);
+        
+        // 恢复原计数
+        this.randomEventConfig.conversationCounts.set(chatId, oldCount || 0);
+        
+        if (eventData) {
+            await this.sendRandomEventMessage(chatId, eventData);
+        } else {
+            await this.bot.sendMessage(chatId, '[*] 手动触发随机事件...');
+            // 强制触发
+            const types = Object.keys(this.randomEventConfig.eventTypes);
+            const eventType = types[Math.floor(Math.random() * types.length)];
+            const events = this.randomEventConfig.eventTypes[eventType];
+            const event = events[Math.floor(Math.random() * events.length)];
+            
+            await this.sendRandomEventMessage(chatId, {
+                type: eventType,
+                event: event,
+                emotion: 'neutral'
+            });
+        }
+    }
+    
+    // 新增：发送随机事件消息
+    async sendRandomEventMessage(chatId, eventData) {
+        const { type, event, emotion } = eventData;
+        
+        // 构建事件消息
+        let eventMessage = `\n[随机事件] ${event.text}\n`;
+        
+        // 添加情绪相关的描述
+        const emotionDescriptions = {
+            'happy': "这似乎是个好兆头。",
+            'sad': "这让气氛变得有些忧郁。",
+            'angry': "这激起了某种冲突的预感。",
+            'excited': "这让人感到兴奋不已！",
+            'anxious': "这让人感到一丝不安。",
+            'romantic': "空气中弥漫着浪漫的气息。",
+            'playful': "这带来了一些趣味。",
+            'shy': "这让气氛变得有些微妙。",
+            'neutral': ""
+        };
+        
+        const emotionDesc = emotionDescriptions[emotion] || "";
+        if (emotionDesc) {
+            eventMessage += `_${emotionDesc}_\n`;
+        }
+        
+        // 发送事件消息 - 不使用Markdown避免错误
+        await this.bot.sendMessage(chatId, eventMessage);
+        
+        // 可选：根据事件类型添加互动按钮
+        if (type === 'discovery' || type === 'interaction') {
+            const keyboard = {
+                inline_keyboard: [[
+                    { text: '[调查] 仔细查看', callback_data: 'event_investigate' },
+                    { text: '[忽略] 继续对话', callback_data: 'event_ignore' }
+                ]]
+            };
+            
+            await this.bot.sendMessage(chatId, '你想要如何应对？', {
+                reply_markup: keyboard
+            });
+        }
+    }
+    
+    // 修改 handleChat 方法，添加随机事件检查
+    async handleChat(msg) {
+        const chatId = msg.chat.id;
+        const text = msg.text;
+        const state = this.userStates.get(chatId);
+        
+        if (!state?.mode) {
+            await this.bot.sendMessage(chatId, 
+                '请先选择一个模式。使用 /menu 打开主菜单。',
+                { reply_to_message_id: msg.message_id }
+            );
+            return;
+        }
+        
+        // 防止并发处理
+        if (state.isProcessing) {
+            await this.bot.sendMessage(chatId, 
+                '... 正在处理上一条消息，请稍候...',
+                { reply_to_message_id: msg.message_id }
+            );
+            return;
+        }
+        
+        state.isProcessing = true;
+        
+        // 检测情绪触发词
+        const detectedEmotion = this.detectEmotion(text);
+        let emotionChanged = false;
+        
+        if (detectedEmotion) {
+            database.saveUserEmotion(
+                chatId, 
+                state.mode, 
+                detectedEmotion.emotion, 
+                detectedEmotion.intensity, 
+                `用户提到"${detectedEmotion.trigger}"`
+            );
+            emotionChanged = true;
+            
+            logger.info('Emotion detected', { 
+                chatId, 
+                emotion: detectedEmotion.emotion, 
+                trigger: detectedEmotion.trigger 
+            });
+        }
+        
+        // 获取当前情绪
+        const currentEmotion = database.getUserEmotion(chatId, state.mode);
+        const emotionSymbol = this.emotionConfig.emotions[currentEmotion.emotion]?.symbol || '';
+        
+        const sentMsg = await this.bot.sendMessage(chatId, `${emotionSymbol} ... 正在思考...`, {
+            reply_to_message_id: msg.message_id
+        });
+        
+        try {
+            // 获取用户设置
+            const userSettings = database.getUserSettings(chatId);
+            
+            // 获取对话历史
+            let messages = database.getConversation(chatId, state.mode) || 
+                           [{ role: 'system', content: MODE_CONFIG[state.mode].prompt }];
+            
+            // 搜索相关记忆并注入到系统提示
+            const relevantMemories = database.getRelevantMemories(chatId, state.mode, text, 10);
+            
+            // 构建系统提示，包含情绪信息
+            let systemContent = messages[0].content;
+            
+            // 添加情绪信息
+            systemContent += '\n\n[当前情绪状态]\n';
+            systemContent += this.getEmotionPrompt(currentEmotion);
+            systemContent += `\n情绪强度：${Math.round(currentEmotion.intensity * 100)}%`;
+            
+            // 添加记忆信息
+            if (relevantMemories.length > 0) {
+                const memoryContext = this.formatMemoriesForContext(relevantMemories);
+                systemContent += '\n\n' + memoryContext;
+            }
+            
+            messages[0] = { role: 'system', content: systemContent };
+            
+            // 添加用户消息
+            messages.push({ role: 'user', content: text });
+            
+            // 限制历史长度
+            const maxMessages = Math.floor(userSettings.contextWindow / 100);
+            if (messages.length > maxMessages) {
+                const systemMessage = messages[0];
+                messages = [systemMessage, ...messages.slice(-(maxMessages - 1))];
+            }
+            
+            // 获取AI响应
+            let fullResponse = '';
+            const response = await nalangClient.chat(messages, {
+                mode: MODE_CONFIG[state.mode].apiMode,
+                maxTokens: userSettings.maxTokens || MODE_CONFIG[state.mode].maxTokens,
+                temperature: userSettings.temperature || MODE_CONFIG[state.mode].temperature,
+                stream: true
+            });
+            
+            // 流式更新消息
+            let lastUpdate = Date.now();
+            for await (const chunk of nalangClient.processStream(response)) {
+                fullResponse += chunk;
+                
+                if (Date.now() - lastUpdate > 300) {
+                    // 不使用Markdown格式发送，避免错误
+                    await this.bot.editMessageText(emotionSymbol + ' ' + fullResponse + '|', {
+                        chat_id: chatId,
+                        message_id: sentMsg.message_id
+                    }).catch(() => {});
+                    lastUpdate = Date.now();
+                }
+            }
+            
+            // 发送最终消息，不使用Markdown
+            await this.bot.editMessageText(emotionSymbol + ' ' + fullResponse, {
+                chat_id: chatId,
+                message_id: sentMsg.message_id
+            });
+            
+            // 如果情绪发生变化，发送提示
+            if (emotionChanged && detectedEmotion) {
+                const emotionConfig = this.emotionConfig.emotions[detectedEmotion.emotion];
+                await this.bot.sendMessage(chatId, 
+                    `[情绪变化] ${emotionConfig.symbol} 变为${emotionConfig.name}`
+                );
+            }
+            
+            // 检查并触发随机事件
+            const eventData = await this.checkAndTriggerRandomEvent(chatId, state.mode);
+            if (eventData) {
+                // 延迟发送随机事件，让对话更自然
+                setTimeout(async () => {
+                    await this.sendRandomEventMessage(chatId, eventData);
+                }, 1500);
+            }
+            
+            // 提取并保存记忆（异步进行）
+            this.extractAndSaveMemories(chatId, state.mode, fullResponse, text);
+            
+            // 恢复原始系统提示并保存对话历史
+            messages[0].content = MODE_CONFIG[state.mode].prompt;
+            messages.push({ role: 'assistant', content: fullResponse });
+            database.saveConversation(chatId, state.mode, messages);
+            
+            // 记录使用统计
+            const estimatedTokens = nalangClient.estimateTokens(text + fullResponse);
+            database.recordUsage(chatId, state.mode, estimatedTokens);
+            
+        } catch (error) {
+            logger.error('Chat processing error', {
+                chatId,
+                mode: state.mode,
+                error: error.message
+            });
+            
+            await this.bot.editMessageText(
+                '[X] 处理请求时出错。请稍后再试或使用 /reset 重置对话。',
+                {
+                    chat_id: chatId,
+                    message_id: sentMsg.message_id
+                }
+            );
+        } finally {
+            state.isProcessing = false;
+        }
+    }
+    
+    // 新增：查看情绪状态命令
+    async handleEmotion(chatId) {
+        const state = this.userStates.get(chatId);
+        if (!state?.mode) {
+            await this.bot.sendMessage(chatId, '[!] 请先选择一个模式。');
+            return;
+        }
+        
+        const emotion = database.getUserEmotion(chatId, state.mode);
+        const emotionConfig = this.emotionConfig.emotions[emotion.emotion];
+        
+        let message = `[情绪状态] ${emotionConfig.symbol} ${emotionConfig.name}\n\n`;
+        message += `强度：${Math.round(emotion.intensity * 100)}%\n`;
+        
+        if (emotion.trigger_reason) {
+            message += `触发原因：${emotion.trigger_reason}\n`;
+        }
+        
+        message += `\n当前模式：${this.getModeName(state.mode)}`;
+        
+        // 添加情绪调整按钮
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: '[*] 开心', callback_data: 'set_emotion_happy' },
+                    { text: '[.] 悲伤', callback_data: 'set_emotion_sad' },
+                    { text: '[!] 愤怒', callback_data: 'set_emotion_angry' }
+                ],
+                [
+                    { text: '[!!] 兴奋', callback_data: 'set_emotion_excited' },
+                    { text: '[-] 平静', callback_data: 'set_emotion_neutral' },
+                    { text: '[~] 调皮', callback_data: 'set_emotion_playful' }
+                ],
+                [
+                    { text: '[<3] 浪漫', callback_data: 'set_emotion_romantic' },
+                    { text: '[//] 害羞', callback_data: 'set_emotion_shy' },
+                    { text: '[?] 焦虑', callback_data: 'set_emotion_anxious' }
+                ]
+            ]
+        };
+        
+        await this.bot.sendMessage(chatId, message, {
+            reply_markup: keyboard
+        });
+    }
+    
+    // 新增：检测情绪触发词
+    detectEmotion(text) {
+        for (const [trigger, emotionData] of Object.entries(this.emotionConfig.triggers)) {
+            if (text.includes(trigger)) {
+                return {
+                    emotion: emotionData.emotion,
+                    intensity: emotionData.intensity,
+                    trigger: trigger
+                };
+            }
+        }
+        return null;
+    }
+    
+    // 新增：根据情绪获取回复风格提示
+    getEmotionPrompt(emotion) {
+        const prompts = {
+            'happy': '你现在心情很好，回复时语气轻快、积极向上，可以使用开心的表情。',
+            'sad': '你现在有些伤心，回复时语气低沉、简短，可能会表现出失落。',
+            'angry': '你现在有些生气，回复时语气强硬、直接，可能会表现出不满。',
+            'excited': '你现在非常兴奋，回复时语气热情、使用感叹号，充满活力。',
+            'anxious': '你现在有些紧张焦虑，回复时可能会显得不安、犹豫。',
+            'romantic': '你现在充满爱意，回复时温柔、甜蜜，可能会说些浪漫的话。',
+            'playful': '你现在很调皮，回复时俏皮、爱开玩笑，喜欢逗弄对方。',
+            'shy': '你现在有些害羞，回复时可能会结巴、脸红，表现得扭捏。',
+            'neutral': '你现在情绪平静，正常回复即可。'
+        };
+        
+        return prompts[emotion.emotion] || prompts['neutral'];
+    }
+    
+    async handleCommand(msg) {
+        const chatId = msg.chat.id;
+        const text = msg.text;
+        const [command, ...args] = text.split(' ');
+        const commandName = command.toLowerCase().replace('/', '');
+        
+        switch (commandName) {
+            case 'start':
+                await this.handleStart(chatId);
+                break;
+                
+            case 'menu':
+            case '菜单':
+                await this.sendMainMenu(chatId);
+                break;
+                
+            case 'reset':
+                await this.handleReset(chatId);
+                break;
+                
+            case 'summon':
+                await this.handleSummon(chatId, args.join(' '));
+                break;
+                
+            case 'stats':
+                await this.handleStats(chatId);
+                break;
+                
+            case 'memories':
+                await this.handleShowMemories(chatId);
+                break;
+                
+            case 'forget':
+                await this.handleForget(chatId, args.join(' '));
+                break;
+                
+            case 'memory':
+                await this.handleMemory(chatId, args.join(' '));
+                break;
+                
+            case 'emotion':
+                await this.handleEmotion(chatId);
+                break;
+                
+            case 'event':
+                await this.handleEvent(chatId);
+                break;
+                
+            case 'help':
+                await this.handleHelp(chatId);
+                break;
+                
+            default:
+                await this.bot.sendMessage(chatId, '[?] 未知命令。使用 /help 查看可用命令。');
+        }
+    }
+    
+    // 修改 handleCallbackQuery，添加事件相关的处理
+    async handleCallbackQuery(query) {
+        const chatId = query.message.chat.id;
+        const messageId = query.message.message_id;
+        const data = query.data;
+        
+        await this.bot.answerCallbackQuery(query.id);
+        
+        logger.info('Callback query', { chatId, data });
+        
+        try {
+            // 处理随机事件相关回调
+            if (data === 'event_investigate') {
+                await this.handleEventInvestigate(chatId, query);
+                return;
+            } else if (data === 'event_ignore') {
+                await this.handleEventIgnore(chatId, query);
+                return;
+            }
+            
+            // 处理情绪设置
+            if (data.startsWith('set_emotion_')) {
+                const emotion = data.replace('set_emotion_', '');
+                await this.handleSetEmotion(chatId, emotion, query);
+                return;
+            }
+            
+            // 原有的回调处理...
+            if (data.startsWith('mode_')) {
+                await this.handleModeSelection(chatId, messageId, data.replace('mode_', ''));
+            } else if (data === 'show_stats') {
+                await this.handleStats(chatId, true);
+            } else if (data === 'send_new_menu') {
+                await this.sendMainMenu(chatId);
+            } else if (data === 'show_settings') {
+                await this.showSettingsMenu(chatId, messageId);
+            } else if (data === 'show_archives') {
+                await this.showArchivesMenu(chatId, messageId);
+            } else if (data === 'show_memories') {
+                await this.handleShowMemories(chatId);
+            } else if (data === 'char_archives') {
+                await this.showCharacterArchives(chatId, messageId);
+            } else if (data === 'story_archives') {
+                await this.showStoryArchives(chatId, messageId);
+            } else if (data.startsWith('setting_')) {
+                await this.handleSettingSelection(chatId, messageId, data.replace('setting_', ''));
+            } else if (data.startsWith('set_')) {
+                await this.handleSettingValue(chatId, messageId, data, query);
+            } else if (data === 'back_to_menu') {
+                await this.sendMainMenu(chatId, messageId);
+            } else if (data === 'save_character') {
+                await this.handleSaveCharacter(chatId, messageId);
+            } else if (data === 'dismiss_save') {
+                await this.handleDismissSave(chatId, messageId);
+            } else if (data === 'save_story') {
+                await this.handleSaveStory(chatId, messageId, query);
+            } else if (data.startsWith('load_char_')) {
+                await this.handleLoadCharacter(chatId, messageId, data);
+            } else if (data.startsWith('load_story_')) {
+                await this.handleLoadStory(chatId, messageId, data);
+            } else if (data.startsWith('use_char_')) {
+                await this.handleUseCharacter(chatId, messageId, data);
+            } else if (data.startsWith('continue_story_')) {
+                await this.handleContinueStory(chatId, messageId, data);
+            } else if (data.startsWith('del_char_')) {
+                await this.handleDeleteCharacter(chatId, messageId, data, query);
+            } else if (data.startsWith('del_story_')) {
+                await this.handleDeleteStory(chatId, messageId, data, query);
+            } else if (data === 'clear_all_memories') {
+                await this.handleClearAllMemories(chatId, query);
+            } else if (data === 'reset_with_memories') {
+                await this.handleResetWithMemories(chatId);
+            } else if (data === 'reset_keep_memories') {
+                await this.bot.sendMessage(chatId, '[√] 对话已重置，记忆已保留。请使用 /menu 重新选择模式。');
+            } else if (data === 'reset_all') {
+                await this.handleResetAll(chatId);
+            } else if (data === 'reset_conv_only') {
+                await this.bot.sendMessage(chatId, '[√] 对话已重置。请使用 /menu 重新选择模式。');
+            } else if (data === 'reset_memories_only') {
+                await this.handleResetMemoriesOnly(chatId);
+            } else if (data === 'reset_emotion_only') {
+                await this.handleResetEmotionOnly(chatId);
+            } else if (data.startsWith('forget_')) {
+                await this.handleForgetMemory(chatId, data, query);
+            } else if (data === 'cancel_forget') {
+                await this.bot.sendMessage(chatId, '[取消] 已取消删除记忆。');
+            } else if (data === 'export_memories') {
+                await this.handleExportMemories(chatId);
+            } else if (data === 'use_imported_character') {
+                await this.handleUseImportedCharacter(chatId, messageId);
+            } else if (data === 'export_character') {
+                await this.handleExportCharacter(chatId, messageId);
+            } else if (data === 'export_json') {
+                await this.handleExportJSON(chatId);
+            } else if (data === 'export_txt') {
+                await this.handleExportTXT(chatId);
+            } else if (data === 'back_to_import') {
+                await this.handleBackToImport(chatId, messageId);
+            }
+        } catch (error) {
+            logger.error('Callback query error', { chatId, data, error: error.message });
+        }
+    }
+    
+    // 新增：处理事件调查
+    async handleEventInvestigate(chatId, query) {
+        await this.bot.sendMessage(chatId, '你决定仔细调查这个异常情况...\n\n请描述你想如何调查或应对这个事件。');
+        
+        // 在下一次对话中，AI会基于这个事件展开剧情
+        const state = this.userStates.get(chatId);
+        if (state) {
+            state.pendingEvent = true;
+        }
+    }
+    
+    // 新增：处理忽略事件
+    async handleEventIgnore(chatId, query) {
+        await this.bot.sendMessage(chatId, '你决定忽略这个异常，继续之前的对话...');
+    }
+    
+    // 新增：处理情绪设置
+    async handleSetEmotion(chatId, emotion, query) {
+        const state = this.userStates.get(chatId);
+        if (!state?.mode) {
+            await this.bot.answerCallbackQuery(query.id, {
+                text: '[!] 请先选择一个模式',
+                show_alert: true
+            });
+            return;
+        }
+        
+        // 保存新情绪
+        database.saveUserEmotion(chatId, state.mode, emotion, 0.7, '手动设置');
+        
+        const emotionConfig = this.emotionConfig.emotions[emotion];
+        await this.bot.answerCallbackQuery(query.id, {
+            text: `${emotionConfig.symbol} 情绪已切换为${emotionConfig.name}`,
+            show_alert: true
+        });
+        
+        // 发送确认消息
+        await this.bot.sendMessage(chatId, 
+            `${emotionConfig.symbol} [情绪] 已切换为${emotionConfig.name}\n\nAI将以此情绪状态回复您。`
+        );
+    }
+    
+    // 修改帮助信息
+    async handleHelp(chatId) {
+        const helpMessage = `[帮助] 使用帮助
+
+基本命令：
+/start - 开始使用机器人
+/menu - 打开功能菜单
+/reset - 重置当前对话
+/summon <描述> - 召唤角色
+/memories - 查看AI的记忆
+/forget <关键词> - 删除特定记忆
+/memory <内容> - 补充记忆
+/emotion - 查看和设置情绪状态
+/event - 手动触发随机事件
+/stats - 查看使用统计
+/help - 显示此帮助
+
+功能说明：
+• 通用模式：标准AI助手
+• 成人模式：无限制创作（仅限成年人）
+• 角色扮演：AI扮演故事中的所有NPC
+• 忏悔室：特殊的角色扮演体验
+• 存档：保存角色和故事
+• 设置：自定义参数
+• AI记忆：自动记住重要信息
+• 情绪系统：影响回复风格
+• 随机事件：增加故事趣味性
+
+隐私说明：
+对话历史保存30天后自动删除。`;
+        
+        await this.bot.sendMessage(chatId, helpMessage);
+    }
+    
+    // 修改统计信息
+    async handleStats(chatId, fromMenu = false) {
+        const stats = database.getUsageStats(chatId);
+        
+        let statsMessage;
+        if (!stats || stats.total_requests === 0) {
+            statsMessage = '[统计] 您还没有使用记录。';
+        } else {
+            statsMessage = `[统计] 您的使用统计（最近30天）
+
+[次数] 总请求次数：${stats.total_requests}
+[消耗] 总Token使用：${stats.total_tokens || 0}
+[时间] 最后使用：${new Date(stats.last_usage).toLocaleString('zh-CN')}`;
+        }
+        
+        // 添加记忆统计
+        const state = this.userStates.get(chatId);
+        if (state?.mode) {
+            const memoryCount = database.getMemoryCount(chatId, state.mode);
+            statsMessage += `\n[记忆] 当前模式记忆数：${memoryCount}`;
+            
+            // 添加情绪状态
+            const emotion = database.getUserEmotion(chatId, state.mode);
+            const emotionConfig = this.emotionConfig.emotions[emotion.emotion];
+            statsMessage += `\n[情绪] 当前情绪：${emotionConfig.symbol} ${emotionConfig.name}`;
+            
+            // 添加随机事件统计
+            if (state.mode === 'roleplay') {
+                const conversationCount = this.randomEventConfig.conversationCounts.get(chatId) || 0;
+                statsMessage += `\n[事件] 距离下次可能触发：${Math.max(0, this.randomEventConfig.minConversationGap - conversationCount)} 次对话`;
+            }
+        }
+        
+        // 如果是从菜单调用，提供返回按钮
+        const keyboard = fromMenu ? {
+            inline_keyboard: [[
+                { text: '[菜单] 返回主菜单', callback_data: 'send_new_menu' }
+            ]]
+        } : undefined;
+        
+        await this.bot.sendMessage(chatId, statsMessage, { 
+            reply_markup: keyboard
+        });
+    }
+    
+    // 修改模式选择
+    async handleModeSelection(chatId, messageId, mode) {
+        const modeConfig = MODE_CONFIG[mode];
+        if (!modeConfig) {
+            await this.bot.sendMessage(chatId, '[X] 无效的模式选择。');
+            return;
+        }
+        
+        // 更新用户状态
+        this.userStates.set(chatId, { mode, isProcessing: false });
+        
+        // 重置随机事件计数器
+        if (mode === 'roleplay') {
+            this.randomEventConfig.conversationCounts.set(chatId, 0);
+        }
+        
+        // 加载或创建对话历史
+        let messages = database.getConversation(chatId, mode);
+        if (!messages) {
+            messages = [{ role: 'system', content: modeConfig.prompt }];
+            database.saveConversation(chatId, mode, messages);
+        }
+        
+        // 发送欢迎消息
+        await this.bot.editMessageText(`[√] 已切换到${this.getModeName(mode)}`, {
+            chat_id: chatId,
+            message_id: messageId
+        });
+        
+        // 检查是否有相关记忆和情绪
+        const memoryCount = database.getMemoryCount(chatId, mode);
+        const emotion = database.getUserEmotion(chatId, mode);
+        const emotionConfig = this.emotionConfig.emotions[emotion.emotion];
+        
+        let welcomeMsg = modeConfig.welcomeMessage;
+        
+        if (memoryCount > 0) {
+            welcomeMsg += `\n\n[记忆] 在此模式下有 ${memoryCount} 条记忆`;
+        }
+        
+        welcomeMsg += `\n[情绪] 当前情绪：${emotionConfig.symbol} ${emotionConfig.name}`;
+        
+        // 如果是角色扮演模式，提示随机事件系统
+        if (mode === 'roleplay') {
+            welcomeMsg += `\n[事件] 随机事件系统已激活`;
+        }
+        
+        await this.bot.sendMessage(chatId, welcomeMsg);
+        
+        // 如果是需要自动开始的模式（如忏悔室）
+        if (modeConfig.autoStart) {
+            await this.processAutoStart(chatId, mode);
+        }
+        
+        // 如果是角色扮演模式，添加保存按钮
+        if (mode === 'roleplay') {
+            const keyboard = {
+                inline_keyboard: [[
+                    { text: '[保存] 保存当前故事', callback_data: 'save_story' }
+                ]]
+            };
+            
+            await this.bot.sendMessage(chatId, '提示：您可以随时保存当前的故事进度', {
+                reply_markup: keyboard
+            });
+        }
+    }
+    
+    // 处理文档上传（角色卡导入）
+    async handleDocument(msg) {
+        const chatId = msg.chat.id;
+        const document = msg.document;
+        
+        // 检查文件类型
+        const fileName = document.file_name;
+        const ext = path.extname(fileName).toLowerCase();
+        
+        if (!['.json', '.txt', '.png'].includes(ext)) {
+            await this.bot.sendMessage(chatId, '[!] 不支持的文件格式。请上传 JSON、TXT 或 PNG 格式的角色卡。');
+            return;
+        }
+        
+        // 检查文件大小（限制10MB）
+        if (document.file_size > 10 * 1024 * 1024) {
+            await this.bot.sendMessage(chatId, '[!] 文件太大，请上传小于10MB的文件。');
+            return;
+        }
+        
+        const sentMsg = await this.bot.sendMessage(chatId, '[*] 正在解析角色卡...');
+        
+        try {
+            // 下载文件
+            const file = await this.bot.getFile(document.file_id);
+            const fileUrl = `https://api.telegram.org/file/bot${config.telegram.token}/${file.file_path}`;
+            
+            const response = await fetch(fileUrl);
+            const buffer = Buffer.from(await response.arrayBuffer());
+            
+            // 解析角色卡
+            const character = await characterCardParser.parseCharacterCard(buffer, fileName);
+            
+            // 生成预览（不使用Markdown）
+            let preview = `[角色卡] ${character.name}\n\n`;
+            if (character.description) preview += `描述：\n${character.description}\n\n`;
+            if (character.personality) preview += `性格：\n${character.personality}\n\n`;
+            if (character.scenario) preview += `场景：\n${character.scenario}\n\n`;
+            if (character.tags.length > 0) preview += `标签：\n${character.tags.join('、')}\n\n`;
+            if (character.nsfw) preview += `[!] 包含成人内容\n\n`;
+            
+            await this.bot.editMessageText(preview, {
+                chat_id: chatId,
+                message_id: sentMsg.message_id
+            });
+            
+            // 保存角色数据到临时存储
+            this.tempCharacterData.set(chatId, {
+                name: character.name,
+                data: {
+                    prompt: characterCardParser.generateCharacterPrompt(character),
+                    response: preview,
+                    original: character,
+                    systemPrompt: MODE_CONFIG.summon.prompt,
+                    timestamp: new Date().toISOString()
+                }
+            });
+            
+            // 提供选项
+            const keyboard = {
+                inline_keyboard: [
+                    [
+                        { text: '[保存] 保存到角色存档', callback_data: 'save_character' },
+                        { text: '[使用] 直接使用此角色', callback_data: 'use_imported_character' }
+                    ],
+                    [
+                        { text: '[导出] 导出为其他格式', callback_data: 'export_character' },
+                        { text: '[X] 取消', callback_data: 'dismiss_save' }
+                    ]
+                ]
+            };
+            
+            await this.bot.sendMessage(chatId, '请选择操作：', {
+                reply_markup: keyboard
+            });
+            
+        } catch (error) {
+            logger.error('Document processing error', { chatId, error: error.message });
+            await this.bot.editMessageText('[X] 解析角色卡失败：' + error.message, {
+                chat_id: chatId,
+                message_id: sentMsg.message_id
+            });
+        }
+    }
+    
+    async handleMessage(msg) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const text = msg.text?.trim();
+        
+        if (!text) return;
+        
+        logger.info('Message received', {
+            chatId,
+            userId,
+            username: msg.from.username,
+            text: text.substring(0, 50)
+        });
+        
+        try {
+            // 直接处理消息，不需要限流检查
+            if (text.startsWith('/')) {
+                await this.handleCommand(msg);
+            } else {
+                await this.handleChat(msg);
+            }
+            
+        } catch (error) {
+            logger.error('Error handling message', {
+                chatId,
+                error: error.message,
+                stack: error.stack
+            });
+            await this.bot.sendMessage(chatId, '[错误] 处理消息时出错，请稍后再试。');
+        }
+    }
+    
+    // 处理补充记忆命令
+    async handleMemory(chatId, memoryContent) {
+        const state = this.userStates.get(chatId);
+        if (!state?.mode) {
+            await this.bot.sendMessage(chatId, '[!] 请先选择一个模式。使用 /menu 选择模式后再补充记忆。');
+            return;
+        }
+        
+        if (!memoryContent) {
+            await this.bot.sendMessage(chatId, 
+                '[!] 请提供要补充的记忆内容。\n\n' +
+                '用法示例：\n' +
+                '/memory 我喜欢被称为主人\n' +
+                '/memory 艾米莉亚是我的专属女仆\n' +
+                '/memory 我的安全词是红色\n' +
+                '/memory 我喜欢温柔的调教\n' +
+                '/memory 我害怕蜘蛛'
+            );
+            return;
+        }
+        
+        // 分析记忆类型
+        let memoryType = 'user_info';
+        let keyName = memoryContent.substring(0, 30) + (memoryContent.length > 30 ? '...' : '');
+        
+        // 智能识别记忆类型
+        if (memoryContent.includes('喜欢') || memoryContent.includes('偏好') || memoryContent.includes('喜爱')) {
+            memoryType = 'preference';
+            keyName = '用户偏好';
+        } else if (memoryContent.includes('害怕') || memoryContent.includes('不喜欢') || memoryContent.includes('讨厌')) {
+            memoryType = 'dislike';
+            keyName = '用户厌恶';
+        } else if (memoryContent.includes('称为') || memoryContent.includes('叫我') || memoryContent.includes('称呼')) {
+            memoryType = 'nickname';
+            keyName = '称呼偏好';
+        } else if (memoryContent.includes('安全词') || memoryContent.includes('停止词')) {
+            memoryType = 'safeword';
+            keyName = '安全词';
+        } else if (memoryContent.includes('是我的') || memoryContent.includes('关系')) {
+            memoryType = 'relationship';
+            keyName = '关系定义';
+        }
+        
+        // 生成记忆数据
+        const memoryData = {
+            memory_type: memoryType,
+            key_name: keyName,
+            content: memoryContent,
+            context: '用户手动补充的记忆',
+            importance: 1.0  // 用户手动补充的记忆重要性设为最高
+        };
+        
+        // 保存记忆
+        const memoryId = database.saveUserMemory(chatId, state.mode, memoryData);
+        
+        if (memoryId) {
+            await this.bot.sendMessage(chatId, 
+                `[√] 记忆已成功补充！\n\n` +
+                `类型：${memoryType}\n` +
+                `内容：${memoryContent}\n` +
+                `模式：${this.getModeName(state.mode)}\n\n` +
+                `AI会在后续对话中记住这条信息。`
+            );
+            
+            logger.info('User memory added', { 
+                chatId, 
+                mode: state.mode, 
+                memoryId,
+                type: memoryType,
+                content: memoryContent.substring(0, 50) 
+            });
+        } else {
+            await this.bot.sendMessage(chatId, '[X] 补充记忆失败，请稍后再试。');
+        }
+    }
+    
+    async handleStart(chatId) {
+        const welcomeMessage = `[机器人] 欢迎使用 NalangAI Bot！
+
+我是一个多功能AI助手，提供以下服务：
+
+[通用] 通用模式 - 友好的AI助手
+[成人] 成人模式 - 无限制创作（仅限成年人）
+[角色] 角色扮演 - 沉浸式故事体验
+[召唤] 召唤功能 - 创造独特角色
+[忏悔] 忏悔室 - 特殊互动体验
+
+使用 /menu 打开主菜单开始使用。
+使用 /help 查看详细帮助。`;
+        
+        await this.bot.sendMessage(chatId, welcomeMessage);
+    }
+    
+    async sendMainMenu(chatId, messageId = null) {
+        const menuText = "[主菜单] 请选择您要使用的功能：";
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: '[通用] 通用模式', callback_data: 'mode_general' },
+                    { text: '[成人] 成人模式', callback_data: 'mode_adult' }
+                ],
+                [
+                    { text: '[角色] 角色扮演', callback_data: 'mode_roleplay' },
+                    { text: '[忏悔] 忏悔室', callback_data: 'mode_confession' }
+                ],
+                [
+                    { text: '[存档] 存档', callback_data: 'show_archives' },
+                    { text: '[设置] 设置', callback_data: 'show_settings' }
+                ],
+                [
+                    { text: '[记忆] AI记忆', callback_data: 'show_memories' },
+                    { text: '[统计] 使用统计', callback_data: 'show_stats' }
+                ]
+            ]
+        };
+        
+        if (messageId) {
+            await this.bot.editMessageText(menuText, {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: keyboard
+            });
+        } else {
+            await this.bot.sendMessage(chatId, menuText, {
+                reply_markup: keyboard
+            });
+        }
+    }
+    
+    // 修改重置方法
+    async handleReset(chatId) {
+        const state = this.userStates.get(chatId);
+        if (!state?.mode) {
+            await this.bot.sendMessage(chatId, '[!] 您还没有选择任何模式。');
+            return;
+        }
+        
+        // 清除数据库中的对话
+        database.deleteConversation(chatId, state.mode);
+        
+        // 重置状态
+        this.userStates.delete(chatId);
+        this.activeCharacters.delete(chatId);
+        
+        // 重置随机事件计数器
+        this.randomEventConfig.conversationCounts.delete(chatId);
+        
+        // 询问是否也要重置情绪和记忆
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: '[全部] 重置所有', callback_data: 'reset_all' },
+                    { text: '[对话] 仅重置对话', callback_data: 'reset_conv_only' }
+                ],
+                [
+                    { text: '[记忆] 仅清除记忆', callback_data: 'reset_memories_only' },
+                    { text: '[情绪] 仅重置情绪', callback_data: 'reset_emotion_only' }
+                ]
+            ]
+        };
+        
+        await this.bot.sendMessage(chatId, 
+            '[√] 对话已重置。\n\n请选择要重置的内容：', 
+            { reply_markup: keyboard }
+        );
+    }
+    
+    async handleSummon(chatId, prompt) {
+        if (!prompt) {
+            await this.bot.sendMessage(chatId, 
+                '[!] 请提供召唤咒语。\n\n用法示例：\n/summon 一位失忆的半精灵女刺客'
+            );
+            return;
+        }
+        
+        const sentMsg = await this.bot.sendMessage(chatId, '[*] 感应到召唤...正在解析咒语...');
+        
+        try {
+            const messages = [
+                { role: 'system', content: MODE_CONFIG.summon.prompt },
+                { role: 'user', content: prompt }
+            ];
+            
+            const response = await nalangClient.chatComplete(messages, {
+                mode: MODE_CONFIG.summon.apiMode,
+                maxTokens: MODE_CONFIG.summon.maxTokens,
+                temperature: MODE_CONFIG.summon.temperature
+            });
+            
+            // 不使用Markdown格式
+            await this.bot.editMessageText(response, {
+                chat_id: chatId,
+                message_id: sentMsg.message_id
+            });
+            
+            // 临时存储角色数据
+            this.tempCharacterData.set(chatId, {
+                name: prompt.substring(0, 30) + (prompt.length > 30 ? '...' : ''),
+                data: {
+                    prompt: prompt,
+                    response: response,
+                    systemPrompt: MODE_CONFIG.summon.prompt,
+                    timestamp: new Date().toISOString()
+                }
+            });
+            
+            // 添加保存按钮
+            const keyboard = {
+                inline_keyboard: [[
+                    { text: '[保存] 保存到人物存档', callback_data: 'save_character' },
+                    { text: '[X] 不保存', callback_data: 'dismiss_save' }
+                ]]
+            };
+            
+            await this.bot.sendMessage(chatId, '是否要保存这个角色到存档？', {
+                reply_markup: keyboard
+            });
+            
+            // 记录使用
+            database.recordUsage(chatId, 'summon');
+            
+        } catch (error) {
+            logger.error('Summon error', { chatId, error: error.message });
+            await this.bot.editMessageText('[X] 召唤失败，请稍后再试。', {
+                chat_id: chatId,
+                message_id: sentMsg.message_id
+            });
+        }
+    }
+    
+    // 修复显示记忆方法 - 关键修复
+    async handleShowMemories(chatId) {
+        const state = this.userStates.get(chatId);
+        if (!state?.mode) {
+            await this.bot.sendMessage(chatId, '[!] 请先选择一个模式。');
+            return;
+        }
+        
+        const memories = database.getAllMemories(chatId, state.mode);
+        
+        if (memories.length === 0) {
+            await this.bot.sendMessage(chatId, '[记忆] 当前模式下还没有任何记忆。\n\n使用 /memory 可以手动添加记忆。');
+            return;
+        }
+        
+        // 按类型分组显示
+        const grouped = {};
+        memories.forEach(m => {
+            if (!grouped[m.memory_type]) grouped[m.memory_type] = [];
+            grouped[m.memory_type].push(m);
+        });
+        
+        let message = `[记忆库] ${this.getModeName(state.mode)} 的记忆：\n\n`;
+        
+        const typeNames = {
+            character: '角色',
+            location: '地点',
+            item: '物品',
+            event: '事件',
+            relationship: '关系',
+            bodyFeatures: '身体特征',
+            clothing: '服装',

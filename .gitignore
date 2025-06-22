@@ -1,0 +1,68 @@
+# 备份现有的 .gitignore
+cp .gitignore .gitignore.bak
+
+# 更新 .gitignore
+cat > .gitignore << 'EOF'
+# 依赖
+node_modules/
+package-lock.json
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+
+# 数据库
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+
+# 测试覆盖率
+coverage/
+.nyc_output/
+
+# 构建输出
+dist/
+build/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+
+# 备份文件
+backup/
+*.backup
+*.bak
+
+# PM2
+.pm2/
+pm2.log
+
+# 其他
+*.pid
+*.seed
+*.pid.lock
+.npm/
+.cache/
+EOF
