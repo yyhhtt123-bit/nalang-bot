@@ -1,67 +1,49 @@
 const logger = require('./utils/logger');
-const TelegramBotService = require('./services/telegram');
 const database = require('./utils/database');
+const TelegramBotService = require('./bot'); // 使用重构后的版本
 
-// 全局错误处理
-process.on('uncaughtException', (error) => {
-    logger.error('Uncaught Exception', { error: error.message, stack: error.stack });
-    process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled Rejection', { reason, promise });
-});
-
-// 优雅关闭
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-
-let bot;
-
-async function shutdown() {
-    logger.info('Shutting down...');
-    
+async function main() {
     try {
-        if (bot) {
+        // 数据库已经在 require 时自动初始化了，不需要调用 init
+        logger.info('Database ready', { 
+            path: database.db?.name || './data/bot.db' 
+        });
+        
+        // 启动 Telegram Bot
+        const bot = new TelegramBotService();
+        logger.info('Bot started successfully (refactored version)');
+        
+        // 优雅关闭
+        process.on('SIGINT', async () => {
+            logger.info('Shutting down...');
             await bot.stop();
-        }
-        database.close();
-        logger.info('Shutdown complete');
-        process.exit(0);
+            database.close(); // database.js 有 close 方法
+            process.exit(0);
+        });
+        
+        process.on('SIGTERM', async () => {
+            logger.info('Shutting down...');
+            await bot.stop();
+            database.close(); // database.js 有 close 方法
+            process.exit(0);
+        });
+        
+        // 处理未捕获的异常
+        process.on('uncaughtException', (error) => {
+            logger.error('Uncaught Exception', { error: error.message, stack: error.stack });
+            process.exit(1);
+        });
+        
+        process.on('unhandledRejection', (reason, promise) => {
+            logger.error('Unhandled Rejection', { reason, promise });
+            process.exit(1);
+        });
+        
     } catch (error) {
-        logger.error('Error during shutdown', { error: error.message });
+        logger.error('Failed to start application', { error: error.message });
         process.exit(1);
     }
 }
 
 // 启动应用
-async function start() {
-    try {
-        logger.info('Starting NalangAI Telegram Bot...');
-        
-        // 创建并启动bot
-        bot = new TelegramBotService();
-        
-        logger.info('Bot started successfully');
-        
-        // 显示启动信息
-        console.log(`
-╔════════════════════════════════════════╗
-║      NalangAI Telegram Bot v2.0                                               ║
-║                                                                                                    ║
-║  Status: ✅ Running                                                                  ║
-║  Mode: ${process.env.NODE_ENV || 'production'}                  ║
-║  Log Level: ${process.env.LOG_LEVEL || 'info'}                         ║
-║                                                                                                    ║
-║  Press Ctrl+C to stop                                                                 ║
-╚════════════════════════════════════════╝
-        `);
-        
-    } catch (error) {
-        logger.error('Failed to start bot', { error: error.message });
-        process.exit(1);
-    }
-}
-
-// 启动
-start();
+main();
