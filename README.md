@@ -24,11 +24,24 @@ Temperature：0.5-0.9 - 实时切换 AI 模型
 ### 环境要求
 - Node.js 18.x 或更高版本 - npm 或 yarn - SQLite3
 ### 安装步骤
-1. 克隆项目 ```bash git clone https://github.com/你的用户名/nalang-bot.git 
-cd nalang-bot 安装依赖 bash npm install 配置环境变量 bash cp .env.example 
-.env nano .env # 编辑并填入你的配置 创建必要目录 bash mkdir -p data logs 
-启动机器人 bash npm start 使用 PM2 管理（推荐） bash npm install -g pm2 pm2 
-start src/index.js --name nalang-bot pm2 save pm2 startup 📖 使用指南 
+1. 克隆项目
+ ```bash 
+git clone https://github.com/你的用户名/nalang-bot.git 
+cd nalang-bot
+安装依赖
+bash 
+npm install
+ 配置环境变量 
+bash 
+cp .env.example .env 
+nano .env # 编辑并填入你的配置 
+创建必要目录 
+bash 
+mkdir -p data logs 
+启动机器人 
+bash 
+npm start 
+
 基本命令 /start - 开始使用机器人 /menu - 显示主菜单 /reset - 重置当前对话 
 /summon <描述> - 召唤角色 /memory <内容> - 添加记忆 /memories - 查看 AI 
 的记忆 /forget <关键词> - 删除特定记忆 /stats - 查看使用统计 /help - 
